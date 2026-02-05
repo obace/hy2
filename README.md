@@ -32,10 +32,10 @@
 
 ---
 
-## 快速开始
+## 一键执行
 
-### 1) 下载脚本
+可直接使用以下命令一键下载并运行脚本：
 
 ```bash
-curl -fsSL -o hy2.sh https://raw.githubusercontent.com/obace/hy2/main/hy2.sh
-chmod +x hy2.sh
+curl -fsSL https://raw.githubusercontent.com/obace/hy2/main/hy2.sh -o hy2.sh && chmod +x hy2.sh && bash hy2.sh
+
