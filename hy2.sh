@@ -1,357 +1,205 @@
-#!/usr/bin/env bash
-set -euo pipefail
+# 1. 创建并写入脚本
+cat > hy2_manage.sh << 'EOF'
+#!/bin/bash
 
-# 安装 hy2 管理脚本到 /usr/local/bin/hy2-manager
-# 并创建快捷命令 /usr/local/bin/hy2
+# ==========================================
+# Hysteria 2 一键管理脚本 (自签名 bing.com 版)
+# ==========================================
 
-if [[ $EUID -ne 0 ]]; then
-  echo "请用 root 执行：sudo bash $0"
-  exit 1
-fi
+# 颜色定义
+RED="\033[31m"
+GREEN="\033[32m"
+YELLOW="\033[33m"
+PLAIN="\033[0m"
 
-cat > /usr/local/bin/hy2-manager <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
+# 路径定义
+HY2_BIN="/usr/local/bin/hysteria"
+CONFIG_DIR="/etc/hysteria"
+CONFIG_FILE="${CONFIG_DIR}/config.yaml"
+CERT_FILE="${CONFIG_DIR}/server.crt"
+KEY_FILE="${CONFIG_DIR}/server.key"
+SERVICE_FILE="/etc/systemd/system/hysteria-server.service"
 
-DOMAIN="bing.com"
-CERT_DIR="/etc/hysteria"
-CONFIG_FILE="${CERT_DIR}/config.yaml"
-CERT_FILE="${CERT_DIR}/server.crt"
-KEY_FILE="${CERT_DIR}/server.key"
-STATE_FILE="${CERT_DIR}/server-meta.env"
-SERVICE_NAME="hysteria-server"
+# 检查是否为 root 用户
+[[ $EUID -ne 0 ]] && echo -e "${RED}错误：${PLAIN} 必须使用 root 用户运行此脚本！\n" && exit 1
 
-detect_service_name() {
-  if systemctl list-unit-files | grep -q "^hysteria-server.service"; then
-    SERVICE_NAME="hysteria-server"
-  elif systemctl list-unit-files | grep -q "^hysteria.service"; then
-    SERVICE_NAME="hysteria"
-  else
-    SERVICE_NAME="hysteria-server"
-  fi
+# 安装依赖
+install_dependencies() {
+    echo -e "${GREEN}正在安装依赖...${PLAIN}"
+    if [ -f /etc/debian_version ]; then
+        apt update && apt install -y curl wget openssl ca-certificates
+    elif [ -f /etc/redhat-release ]; then
+        yum install -y curl wget openssl ca-certificates
+    fi
 }
 
-require_root() {
-  if [[ $EUID -ne 0 ]]; then
-    echo "请使用 root 运行：sudo $0 $*"
-    exit 1
-  fi
+# 生成随机端口
+get_random_port() {
+    echo $(shuf -i 10000-65000 -n 1)
 }
 
-get_public_ip() {
-  local ip
-  ip=$(curl -4 -fsSL --max-time 8 https://api.ipify.org || true)
-  [[ -z "${ip}" ]] && ip=$(curl -4 -fsSL --max-time 8 https://ifconfig.me || true)
-  [[ -z "${ip}" ]] && ip=$(hostname -I | awk '{print $1}' || true)
-  echo "${ip:-YOUR_SERVER_IP}"
+# 生成随机密码
+get_random_pass() {
+    echo $(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)
 }
 
-gen_port() { shuf -i 10000-65535 -n 1; }
-gen_pass() { tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 20; }
-
-install_deps() {
-  if command -v apt >/dev/null 2>&1; then
-    apt update -y
-    apt install -y curl openssl ca-certificates coreutils
-  elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y curl openssl ca-certificates coreutils
-  elif command -v yum >/dev/null 2>&1; then
-    yum install -y curl openssl ca-certificates coreutils
-  elif command -v pacman >/dev/null 2>&1; then
-    pacman -Sy --noconfirm curl openssl ca-certificates coreutils
-  else
-    echo "未识别包管理器，请手动安装 curl openssl 后重试。"
-    exit 1
-  fi
+# 生成自签名证书 (CN=bing.com)
+generate_cert() {
+    echo -e "${GREEN}正在生成自签名证书 (域名: bing.com)...${PLAIN}"
+    mkdir -p $CONFIG_DIR
+    openssl req -x509 -nodes -newkey rsa:2048 -keyout $KEY_FILE -out $CERT_FILE -days 3650 -subj "/C=US/ST=Washington/L=Redmond/O=Microsoft Corporation/CN=bing.com"
+    chmod 644 $CERT_FILE
+    chmod 600 $KEY_FILE
 }
 
-open_firewall_udp() {
-  local port="$1"
-  if command -v ufw >/dev/null 2>&1; then
-    ufw allow "${port}/udp" >/dev/null 2>&1 || true
-  fi
-  if command -v firewall-cmd >/dev/null 2>&1; then
-    firewall-cmd --permanent --add-port="${port}/udp" >/dev/null 2>&1 || true
-    firewall-cmd --reload >/dev/null 2>&1 || true
-  fi
-  if command -v iptables >/dev/null 2>&1; then
-    iptables -C INPUT -p udp --dport "${port}" -j ACCEPT >/dev/null 2>&1 || \
-    iptables -I INPUT -p udp --dport "${port}" -j ACCEPT >/dev/null 2>&1 || true
-  fi
-}
-
-close_firewall_udp() {
-  local port="$1"
-  if command -v ufw >/dev/null 2>&1; then
-    ufw delete allow "${port}/udp" >/dev/null 2>&1 || true
-  fi
-  if command -v firewall-cmd >/dev/null 2>&1; then
-    firewall-cmd --permanent --remove-port="${port}/udp" >/dev/null 2>&1 || true
-    firewall-cmd --reload >/dev/null 2>&1 || true
-  fi
-  if command -v iptables >/dev/null 2>&1; then
-    iptables -D INPUT -p udp --dport "${port}" -j ACCEPT >/dev/null 2>&1 || true
-  fi
-}
-
-save_meta() {
-  local port="$1" pass="$2"
-  mkdir -p "${CERT_DIR}"
-  cat > "${STATE_FILE}" <<EOM
-PORT=${port}
-PASSWORD=${pass}
-DOMAIN=${DOMAIN}
-EOM
-  chmod 600 "${STATE_FILE}"
-}
-
-load_meta() {
-  if [[ -f "${STATE_FILE}" ]]; then
-    # shellcheck disable=SC1090
-    source "${STATE_FILE}"
-  else
-    PORT=""
-    PASSWORD=""
-  fi
-}
-
+# 写入配置文件
 write_config() {
-  local port="$1" pass="$2"
-  mkdir -p "${CERT_DIR}"
-  cat > "${CONFIG_FILE}" <<EOM
-listen: :${port}
+    local port=$1
+    local password=$2
+    
+    cat > $CONFIG_FILE <<EOF
+listen: :$port
 
 tls:
-  cert: ${CERT_FILE}
-  key: ${KEY_FILE}
+  cert: $CERT_FILE
+  key: $KEY_FILE
 
 auth:
   type: password
-  password: ${pass}
+  password: $password
 
 masquerade:
   type: proxy
   proxy:
     url: https://bing.com
     rewriteHost: true
-EOM
-  chmod 600 "${CONFIG_FILE}"
+EOF
 }
 
-cert_fingerprint() {
-  if [[ -f "${CERT_FILE}" ]]; then
-    openssl x509 -in "${CERT_FILE}" -noout -fingerprint -sha256 | cut -d= -f2
-  else
-    echo "N/A"
-  fi
+# 安装 Hysteria 2
+install_hy2() {
+    install_dependencies
+    
+    echo -e "${GREEN}正在下载 Hysteria 2 核心...${PLAIN}"
+    # 使用官方脚本安装/更新
+    bash <(curl -fsSL https://get.hy2.sh/)
+    
+    # 停止服务以进行配置
+    systemctl stop hysteria-server 2>/dev/null
+
+    # 生成配置
+    local port=$(get_random_port)
+    local password=$(get_random_pass)
+    
+    generate_cert
+    write_config "$port" "$password"
+    
+    # 重启服务
+    systemctl enable hysteria-server
+    systemctl restart hysteria-server
+    
+    echo -e "${GREEN}Hysteria 2 安装并启动成功！${PLAIN}"
+    show_config
 }
 
-print_info() {
-  detect_service_name
-  load_meta
-  local ip fp
-  ip="$(get_public_ip)"
-  fp="$(cert_fingerprint)"
-
-  echo "============= Hysteria2 信息 ============="
-  echo "服务名: ${SERVICE_NAME}"
-  echo "服务器IP: ${ip}"
-  echo "端口(UDP): ${PORT:-未知}"
-  echo "密码: ${PASSWORD:-未知}"
-  echo "SNI/域名: ${DOMAIN}"
-  echo "证书SHA256指纹: ${fp}"
-  echo
-  if [[ -n "${PORT:-}" && -n "${PASSWORD:-}" ]]; then
-    echo "客户端 URI："
-    echo "hysteria2://${PASSWORD}@${ip}:${PORT}/?sni=${DOMAIN}&insecure=1"
-  fi
-  echo "=========================================="
+# 获取公网 IP
+get_ip() {
+    local ip=$(curl -s4 ifconfig.me)
+    if [[ -z "$ip" ]]; then
+        ip=$(curl -s4 icanhazip.com)
+    fi
+    echo $ip
 }
 
-do_install() {
-  require_root
-  detect_service_name
-  local port pass
-  port="$(gen_port)"
-  pass="$(gen_pass)"
+# 显示配置信息
+show_config() {
+    if [[ ! -f $CONFIG_FILE ]]; then
+        echo -e "${RED}配置文件不存在，请先安装！${PLAIN}"
+        return
+    fi
 
-  echo "==> 安装依赖..."
-  install_deps
-
-  echo "==> 安装 Hysteria2..."
-  bash <(curl -fsSL https://get.hy2.sh/)
-
-  detect_service_name
-
-  echo "==> 生成自签证书（CN=${DOMAIN}）..."
-  mkdir -p "${CERT_DIR}"
-  openssl req -x509 -nodes -newkey rsa:2048 \
-    -keyout "${KEY_FILE}" \
-    -out "${CERT_FILE}" \
-    -days 36500 \
-    -subj "/CN=${DOMAIN}" >/dev/null 2>&1
-  chmod 600 "${KEY_FILE}"
-  chmod 644 "${CERT_FILE}"
-
-  echo "==> 写入配置..."
-  write_config "${port}" "${pass}"
-  save_meta "${port}" "${pass}"
-
-  echo "==> 启动服务..."
-  systemctl daemon-reload || true
-  systemctl enable "${SERVICE_NAME}" >/dev/null 2>&1 || true
-  systemctl restart "${SERVICE_NAME}"
-
-  echo "==> 放行 UDP 端口 ${port}..."
-  open_firewall_udp "${port}"
-
-  echo "安装完成。"
-  print_info
+    local port=$(grep "listen:" $CONFIG_FILE | awk -F: '{print $3}')
+    local password=$(grep "password:" $CONFIG_FILE | awk '{print $2}')
+    local ip=$(get_ip)
+    
+    echo -e "\n========================================"
+    echo -e "       Hysteria 2 配置信息"
+    echo -e "========================================"
+    echo -e "IP 地址: ${GREEN}${ip}${PLAIN}"
+    echo -e "端口   : ${GREEN}${port}${PLAIN}"
+    echo -e "密码   : ${GREEN}${password}${PLAIN}"
+    echo -e "SNI    : ${GREEN}bing.com${PLAIN}"
+    echo -e "========================================"
+    
+    # 生成分享链接
+    # 注意：因为是自签名证书，必须加上 insecure=1
+    local hy2_link="hy2://${password}@${ip}:${port}/?insecure=1&sni=bing.com#Hysteria2-Bing"
+    
+    echo -e "分享链接 (复制导入客户端):"
+    echo -e "${YELLOW}${hy2_link}${PLAIN}"
+    echo -e "========================================"
+    echo -e "${RED}注意：由于使用自签名证书，客户端必须开启【允许不安全连接/跳过证书验证】选项。${PLAIN}"
+    echo -e ""
 }
 
-do_status() {
-  require_root
-  detect_service_name
-  systemctl status "${SERVICE_NAME}" --no-pager -l
+# 修改端口
+change_port() {
+    read -p "请输入新端口 (留空则随机): " new_port
+    [[ -z "$new_port" ]] && new_port=$(get_random_port)
+    
+    sed -i "s/listen: :.*/listen: :$new_port/" $CONFIG_FILE
+    systemctl restart hysteria-server
+    echo -e "${GREEN}端口已修改为: $new_port${PLAIN}"
+    show_config
 }
 
-do_restart() {
-  require_root
-  detect_service_name
-  systemctl restart "${SERVICE_NAME}"
-  echo "已重启 ${SERVICE_NAME}"
-  systemctl is-active "${SERVICE_NAME}" >/dev/null && echo "服务状态：active"
+# 修改密码
+change_password() {
+    read -p "请输入新密码 (留空则随机): " new_pass
+    [[ -z "$new_pass" ]] && new_pass=$(get_random_pass)
+    
+    sed -i "s/password: .*/password: $new_pass/" $CONFIG_FILE
+    systemctl restart hysteria-server
+    echo -e "${GREEN}密码已修改为: $new_pass${PLAIN}"
+    show_config
 }
 
-do_change_port() {
-  require_root
-  detect_service_name
-  load_meta
-  [[ -f "${CONFIG_FILE}" ]] || { echo "未安装，请先执行 install"; exit 1; }
-
-  local old_port new_port pass
-  old_port="${PORT:-}"
-  pass="${PASSWORD:-$(gen_pass)}"
-  new_port="$(gen_port)"
-
-  write_config "${new_port}" "${pass}"
-  save_meta "${new_port}" "${pass}"
-
-  systemctl restart "${SERVICE_NAME}"
-  open_firewall_udp "${new_port}"
-  [[ -n "${old_port}" ]] && close_firewall_udp "${old_port}"
-
-  echo "端口已更换：${old_port:-未知} -> ${new_port}"
-  print_info
+# 卸载
+uninstall_hy2() {
+    echo -e "${YELLOW}正在卸载 Hysteria 2...${PLAIN}"
+    systemctl stop hysteria-server
+    systemctl disable hysteria-server
+    rm -f $SERVICE_FILE
+    rm -rf $CONFIG_DIR
+    rm -f $HY2_BIN
+    systemctl daemon-reload
+    echo -e "${GREEN}卸载完成！${PLAIN}"
 }
 
-do_change_pass() {
-  require_root
-  detect_service_name
-  load_meta
-  [[ -f "${CONFIG_FILE}" ]] || { echo "未安装，请先执行 install"; exit 1; }
-
-  local port new_pass
-  port="${PORT:-$(gen_port)}"
-  new_pass="$(gen_pass)"
-
-  write_config "${port}" "${new_pass}"
-  save_meta "${port}" "${new_pass}"
-  systemctl restart "${SERVICE_NAME}"
-
-  echo "密码已更新。"
-  print_info
-}
-
-do_uninstall() {
-  require_root
-  detect_service_name
-  load_meta
-
-  systemctl stop "${SERVICE_NAME}" >/dev/null 2>&1 || true
-  systemctl disable "${SERVICE_NAME}" >/dev/null 2>&1 || true
-
-  if command -v hysteria >/dev/null 2>&1; then
-    hysteria uninstall server >/dev/null 2>&1 || true
-  fi
-
-  if [[ -n "${PORT:-}" ]]; then
-    close_firewall_udp "${PORT}"
-  fi
-
-  rm -rf "${CERT_DIR}"
-  echo "Hysteria2 已卸载并清理配置。"
-}
-
+# 菜单
 menu() {
-  while true; do
-    echo
-    echo "========== hy2 管理菜单 =========="
-    echo "1) 安装 Hysteria2"
-    echo "2) 查看连接信息"
-    echo "3) 查看服务状态"
-    echo "4) 重启服务"
-    echo "5) 换随机五位端口"
-    echo "6) 换随机密码"
-    echo "7) 卸载"
-    echo "0) 退出"
-    echo "=================================="
-    read -rp "请选择 [0-7]: " choice
-
-    case "${choice}" in
-      1) do_install ;;
-      2) print_info ;;
-      3) do_status ;;
-      4) do_restart ;;
-      5) do_change_port ;;
-      6) do_change_pass ;;
-      7) do_uninstall ;;
-      0) exit 0 ;;
-      *) echo "无效选项，请重试。" ;;
+    clear
+    echo -e "#############################################"
+    echo -e "#    Hysteria 2 一键管理脚本 (Bing自签版)   #"
+    echo -e "#############################################"
+    echo -e " 1. 安装 Hysteria 2"
+    echo -e " 2. 查看当前配置 / 分享链接"
+    echo -e " 3. 修改端口"
+    echo -e " 4. 修改密码"
+    echo -e " 5. 重启服务"
+    echo -e " 6. 卸载 Hysteria 2"
+    echo -e " 0. 退出"
+    echo -e "#############################################"
+    
+    read -p "请选择 [0-6]: " choice
+    case $choice in
+        1) install_hy2 ;;
+        2) show_config ;;
+        3) change_port ;;
+        4) change_password ;;
+        5) systemctl restart hysteria-server && echo -e "${GREEN}服务已重启${PLAIN}" ;;
+        6) uninstall_hy2 ;;
+        0) exit 0 ;;
+        *) echo -e "${RED}无效输入${PLAIN}" ;;
     esac
-  done
 }
-
-usage() {
-  cat <<EOM
-用法:
-  hy2-manager install
-  hy2-manager info
-  hy2-manager status
-  hy2-manager restart
-  hy2-manager change-port
-  hy2-manager change-pass
-  hy2-manager uninstall
-  hy2-manager menu
-EOM
-}
-
-main() {
-  local cmd="${1:-menu}"
-  case "${cmd}" in
-    install)      do_install ;;
-    info)         print_info ;;
-    status)       do_status ;;
-    restart)      do_restart ;;
-    change-port)  do_change_port ;;
-    change-pass)  do_change_pass ;;
-    uninstall)    do_uninstall ;;
-    menu)         menu ;;
-    *)            usage; exit 1 ;;
-  esac
-}
-
-main "$@"
-EOF
-
-chmod +x /usr/local/bin/hy2-manager
-
-# 快捷命令 hy2（直接进入菜单）
-cat > /usr/local/bin/hy2 <<'EOF'
-#!/usr/bin/env bash
-exec /usr/local/bin/hy2-manager menu
-EOF
-chmod +x /usr/local/bin/hy2
-
-echo "安装完成！现在可直接输入：hy2"
-echo "也可用命令模式：hy2-manager install|info|restart|change-port|change-pass|status|uninstall"
