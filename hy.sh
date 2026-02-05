@@ -1,8 +1,13 @@
 #!/bin/bash
 
 # ==========================================
-# Hysteria 2 一键管理脚本 (自签名 bing.com 版)
+# Hysteria 2 一键管理脚本 (Bing自签版 + 快捷指令)
+#   - 快捷指令: 输入 hy2 即可呼出菜单
+#   - 修复: 强制 root 运行，解决权限问题
 # ==========================================
+
+# 脚本托管地址 (用于生成快捷指令)
+SCRIPT_URL="https://raw.githubusercontent.com/obace/hy2/refs/heads/main/hy.sh"
 
 # 颜色定义
 RED="\033[31m"
@@ -74,33 +79,57 @@ masquerade:
 EOF
 }
 
+# 修复服务权限 (强制 root)
+fix_service_permissions() {
+    echo -e "${GREEN}正在修正服务权限 (强制使用 root)...${PLAIN}"
+    if [ -f "$SERVICE_FILE" ]; then
+        sed -i '/^User=/d' "$SERVICE_FILE"
+        sed -i '/^Group=/d' "$SERVICE_FILE"
+        sed -i 's|/etc/default/hysteria|/etc/default/hysteria|g' "$SERVICE_FILE"
+    fi
+    if [ -f "/etc/systemd/system/hysteria-server@.service" ]; then
+        sed -i '/^User=/d' /etc/systemd/system/hysteria-server@.service
+        sed -i '/^Group=/d' /etc/systemd/system/hysteria-server@.service
+    fi
+    systemctl daemon-reload
+}
+
+# 创建快捷指令 (hy2)
+create_shortcut() {
+    echo -e "${GREEN}正在创建快捷指令 'hy2'...${PLAIN}"
+    curl -fsSL $SCRIPT_URL -o /usr/bin/hy2
+    chmod +x /usr/bin/hy2
+    echo -e "${GREEN}快捷指令创建成功！以后输入 hy2 即可管理。${PLAIN}"
+}
+
 # 安装 Hysteria 2
 install_hy2() {
     install_dependencies
     
     echo -e "${GREEN}正在下载 Hysteria 2 核心...${PLAIN}"
-    # 使用官方脚本安装/更新
     bash <(curl -fsSL https://get.hy2.sh/)
     
-    # 停止服务以进行配置
     systemctl stop hysteria-server 2>/dev/null
+    fix_service_permissions
 
-    # 生成配置
     local port=$(get_random_port)
     local password=$(get_random_pass)
     
     generate_cert
     write_config "$port" "$password"
     
-    # 重启服务
+    # 启用并重启服务
     systemctl enable hysteria-server
     systemctl restart hysteria-server
+    
+    # 创建快捷指令
+    create_shortcut
     
     echo -e "${GREEN}Hysteria 2 安装并启动成功！${PLAIN}"
     show_config
 }
 
-# 获取公网 IP
+# 获取 IP
 get_ip() {
     local ip=$(curl -s4 ifconfig.me)
     if [[ -z "$ip" ]]; then
@@ -109,7 +138,7 @@ get_ip() {
     echo $ip
 }
 
-# 显示配置信息
+# 显示配置
 show_config() {
     if [[ ! -f $CONFIG_FILE ]]; then
         echo -e "${RED}配置文件不存在，请先安装！${PLAIN}"
@@ -129,13 +158,12 @@ show_config() {
     echo -e "SNI    : ${GREEN}bing.com${PLAIN}"
     echo -e "========================================"
     
-    # 生成分享链接
     local hy2_link="hy2://${password}@${ip}:${port}/?insecure=1&sni=bing.com#Hysteria2-Bing"
     
     echo -e "分享链接 (复制导入客户端):"
     echo -e "${YELLOW}${hy2_link}${PLAIN}"
     echo -e "========================================"
-    echo -e "${RED}注意：由于使用自签名证书，客户端必须开启【允许不安全连接/跳过证书验证】选项。${PLAIN}"
+    echo -e "${RED}注意：需开启客户端【允许不安全连接/跳过证书验证】。${PLAIN}"
     echo -e ""
 }
 
@@ -143,7 +171,6 @@ show_config() {
 change_port() {
     read -p "请输入新端口 (留空则随机): " new_port
     [[ -z "$new_port" ]] && new_port=$(get_random_port)
-    
     sed -i "s/listen: :.*/listen: :$new_port/" $CONFIG_FILE
     systemctl restart hysteria-server
     echo -e "${GREEN}端口已修改为: $new_port${PLAIN}"
@@ -154,7 +181,6 @@ change_port() {
 change_password() {
     read -p "请输入新密码 (留空则随机): " new_pass
     [[ -z "$new_pass" ]] && new_pass=$(get_random_pass)
-    
     sed -i "s/password: .*/password: $new_pass/" $CONFIG_FILE
     systemctl restart hysteria-server
     echo -e "${GREEN}密码已修改为: $new_pass${PLAIN}"
@@ -169,6 +195,8 @@ uninstall_hy2() {
     rm -f $SERVICE_FILE
     rm -rf $CONFIG_DIR
     rm -f $HY2_BIN
+    rm -f /usr/bin/hy2  # 删除快捷指令
+    userdel hysteria 2>/dev/null
     systemctl daemon-reload
     echo -e "${GREEN}卸载完成！${PLAIN}"
 }
@@ -186,6 +214,8 @@ menu() {
     echo -e " 5. 重启服务"
     echo -e " 6. 卸载 Hysteria 2"
     echo -e " 0. 退出"
+    echo -e "#############################################"
+    echo -e " 提示: 输入 ${GREEN}hy2${PLAIN} 可随时调出此菜单"
     echo -e "#############################################"
     
     read -p "请选择 [0-6]: " choice
