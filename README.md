@@ -1,41 +1,18 @@
-# hy2
+# Hysteria 2 一键安装脚本 (自签名 Bing 证书版)
 
-一个用于 **Hysteria2** 的一键管理脚本。  
-支持自签证书（域名固定 `bing.com`）、随机五位端口、随机密码，并提供 `hy2` 快捷菜单管理。
+这是一个专为懒人设计的 Hysteria 2 一键安装管理脚本。无需购买域名，使用自签名证书（伪装为 bing.com），并自动解决官方安装脚本的权限问题。
 
----
+## ✨ 脚本特点
 
-## 功能特性
+- **零门槛**：无需购买域名，自动生成自签名证书 (SNI: `bing.com`)。
+- **高安全性**：默认生成随机 5 位端口 (10000-65000) 和 16 位强密码。
+- **自动修复**：自动修正 systemd 服务权限，强制以 root 运行，解决官方脚本无法读取 root 生成证书的问题。
+- **快捷管理**：内置快捷指令，安装后输入 `hy2` 即可随时呼出管理菜单。
+- **功能全**：支持一键修改端口、修改密码、查看配置、生成分享链接、卸载等。
 
-- 一键安装 Hysteria2
-- 自签证书（CN=`bing.com`）
-- 随机五位端口（10000-65535）
-- 随机密码
-- 输出客户端连接信息（URI）
-- 快捷命令 `hy2`（菜单式管理）
-- 支持操作：
-  - 安装
-  - 查看信息
-  - 查看状态
-  - 重启
-  - 换端口
-  - 换密码
-  - 卸载
+## 🚀 安装命令
 
----
-
-## 系统要求
-
-- Linux 服务器（Debian / Ubuntu / CentOS / Rocky / AlmaLinux 等）
-- `root` 权限
-- 可访问外网（用于下载安装 Hysteria2）
-
----
-
-## 一键执行
-
-可直接使用以下命令一键下载并运行脚本：
+在服务器终端 (SSH) 中执行以下命令即可：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/obace/hy2/main/hy2.sh -o hy2.sh && chmod +x hy2.sh && bash hy2.sh
-
+bash <(curl -Ls [https://raw.githubusercontent.com/obace/hy2/refs/heads/main/hy.sh](https://raw.githubusercontent.com/obace/hy2/refs/heads/main/hy.sh))
