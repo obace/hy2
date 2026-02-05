@@ -15,4 +15,4 @@
 在服务器终端 (SSH) 中执行以下命令即可：
 
 ```bash
-bash <(curl -Ls [https://raw.githubusercontent.com/obace/hy2/refs/heads/main/hy.sh](https://raw.githubusercontent.com/obace/hy2/refs/heads/main/hy.sh))
+bash <(curl -Ls [https://raw.githubusercontent.com/obace/hy2/refs/heads/main/hy.sh])
