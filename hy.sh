@@ -1,5 +1,3 @@
-# 1. 创建并写入脚本
-cat > hy2_manage.sh << 'EOF'
 #!/bin/bash
 
 # ==========================================
@@ -57,7 +55,7 @@ write_config() {
     local port=$1
     local password=$2
     
-    cat > $CONFIG_FILE <<EOF
+cat > $CONFIG_FILE <<EOF
 listen: :$port
 
 tls:
@@ -132,7 +130,6 @@ show_config() {
     echo -e "========================================"
     
     # 生成分享链接
-    # 注意：因为是自签名证书，必须加上 insecure=1
     local hy2_link="hy2://${password}@${ip}:${port}/?insecure=1&sni=bing.com#Hysteria2-Bing"
     
     echo -e "分享链接 (复制导入客户端):"
@@ -203,3 +200,6 @@ menu() {
         *) echo -e "${RED}无效输入${PLAIN}" ;;
     esac
 }
+
+# 运行菜单
+menu
